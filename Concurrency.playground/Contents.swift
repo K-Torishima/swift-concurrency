@@ -303,3 +303,48 @@ func wrappedAsyncFetchUser(userID: String) async -> User? {
     })
 }
 
+Task.detached {
+    let userID = "1234"
+    let user = await wrappedAsyncFetchUser(userID: userID)
+    print(user ?? "")
+    
+    let noUser = await wrappedAsyncFetchUser(userID: "")
+    print(noUser ?? "no user")
+}
+
+// withCheckedThrowingContinuation
+
+enum APIError: Error {
+    case error
+    
+    var errorType: String {
+        switch self {
+        case .error:
+            return "これはエラーです"
+        }
+    }
+}
+
+func request(with urlString: String, completionHandler: @escaping (Result<String, APIError>) -> ()) {
+    // do somting
+    
+}
+
+
+func wrappedRequest(with urlString: String) async throws -> String {
+    return try await withCheckedThrowingContinuation({ continuation in
+        request(with: urlString) { result in
+            continuation.resume(with: result)
+        }
+    })
+}
+
+Task.detached {
+    let urlString = "https://example.com"
+    let result = try await wrappedRequest(with: urlString)
+    print(result)
+}
+
+
+// ラップする場合は必ず resumeを呼ぶこと
+//　resumeは2回以上呼ぶとErrorになる、guardとかの中なら条件判定とかされるので関係ない
