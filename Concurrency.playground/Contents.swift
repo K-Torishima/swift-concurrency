@@ -113,3 +113,193 @@ Task.detached {
  
  
  */
+
+struct AsyncError: Error {
+    
+    let message: String
+    
+    init(message: String) {
+        self.message = message
+        print(message)
+    }
+}
+
+
+
+// 非同期関数の定義
+
+// 戻り値なし　非同期関数
+func sample1() async {
+    print(#function)
+}
+
+// 戻り値あり　非同期関数
+func sample2() async -> String {
+    return "result"
+}
+
+// Errorがある非同期関数
+func sample3(showError: Bool) async throws {
+    if showError {
+        throw AsyncError(message: "error")
+    } else {
+        print("no error")
+    }
+}
+
+Task.detached {
+    await sample1()
+}
+
+Task.detached {
+    let result = await sample2()
+    print(result)
+}
+
+Task.detached {
+    do {
+        try await sample3(showError: true)
+    } catch {
+        print(error.localizedDescription)
+    }
+}
+
+
+ // イニシャライザにもつけられる
+
+class Sample {
+    init(label: String) async {
+        print("init async")
+    }
+}
+
+Task.detached {
+    _ = await Sample(label: "aaaa")
+}
+
+/*
+ 
+ await キーワードはどこでも使えるわけではない
+ await プログラムに待機させるということ
+ 
+ 使える場所
+ - 非同期関数　body
+ - @mainがついている型のmainメソッドのbody
+ - Task内
+ */
+
+
+Task.detached {
+    let result = await sample2()
+    let sample = await Sample(label: result)
+    print(sample)
+}
+
+// 以下にまとめてかける
+
+Task.detached {
+    // awaitを一つにできる
+    let sample = await Sample(label: sample2())
+}
+
+
+// 順列実行
+
+// クロージャーの時
+
+// １秒まつメソッドを３回呼ぶ
+func waitOneSecond(completionHandler: @escaping () -> ()) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: {
+        completionHandler()
+    })
+}
+
+
+func runAsSequence() {
+    waitOneSecond {
+        waitOneSecond {
+            waitOneSecond {
+                // do something
+            }
+        }
+    }
+}
+
+// async/await
+
+// クロージャーのコードを書き換えた
+func waitOneSecond() async {
+     try? await Task.sleep(nanoseconds: 1 * NSEC_PER_SEC)
+}
+
+func runAsSequence() async {
+    await waitOneSecond()
+    await waitOneSecond()
+    await waitOneSecond()
+}
+
+// 並列実行
+
+func asParallel(completionHandler: @escaping () -> ()) {
+    let group: DispatchGroup = .init()
+    
+    group.enter()
+    waitOneSecond {
+        group.leave()
+    }
+    
+    group.enter()
+    waitOneSecond {
+        group.leave()
+    }
+    
+    group.enter()
+    waitOneSecond {
+        group.leave()
+    }
+    
+    group.notify(queue: .global()) {
+        completionHandler()
+    }
+}
+
+asParallel {
+    // １秒まつを３つ並列に実行した後に呼ばれる
+}
+
+func asParallel() async {
+    async let first: Void = waitOneSecond()
+    async let second: Void = waitOneSecond()
+    async let third: Void = waitOneSecond()
+    
+    await first
+    await second
+    await third
+}
+
+Task.detached {
+    await asParallel()
+}
+
+// withCheckedContinuation
+
+struct User {}
+
+// クロージャーで実装されている関数
+func fetchUser(userID: String, completionHandler: @escaping ((User?) -> ())) {
+    if userID.isEmpty {
+        completionHandler(nil)
+    } else {
+        completionHandler(User())
+    }
+}
+
+//　非同期関数にラップする
+func wrappedAsyncFetchUser(userID: String) async -> User? {
+    return await withCheckedContinuation({ continuation in
+        fetchUser(userID: userID) { user in
+            continuation.resume(returning: user)
+        }
+    })
+}
+
