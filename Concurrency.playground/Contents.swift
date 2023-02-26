@@ -83,10 +83,10 @@ Task.detached {
         
         let response = try await request(url: url)
         isLoding = false // Errorがなければ必ず通る
-        print(response) // B
+        //print(response) // B
     } catch {
         isLoding = false // Errorの場合でも必ず通る
-        print(error.localizedDescription)
+        //print(error.localizedDescription)
         
     }
 }
@@ -120,7 +120,7 @@ struct AsyncError: Error {
     
     init(message: String) {
         self.message = message
-        print(message)
+       // print(message)
     }
 }
 
@@ -130,7 +130,7 @@ struct AsyncError: Error {
 
 // 戻り値なし　非同期関数
 func sample1() async {
-    print(#function)
+   // print(#function)
 }
 
 // 戻り値あり　非同期関数
@@ -143,7 +143,7 @@ func sample3(showError: Bool) async throws {
     if showError {
         throw AsyncError(message: "error")
     } else {
-        print("no error")
+       // print("no error")
     }
 }
 
@@ -153,14 +153,14 @@ Task.detached {
 
 Task.detached {
     let result = await sample2()
-    print(result)
+    //print(result)
 }
 
 Task.detached {
     do {
         try await sample3(showError: true)
     } catch {
-        print(error.localizedDescription)
+       // print(error.localizedDescription)
     }
 }
 
@@ -169,7 +169,7 @@ Task.detached {
 
 class Sample {
     init(label: String) async {
-        print("init async")
+        //print("init async")
     }
 }
 
@@ -192,7 +192,7 @@ Task.detached {
 Task.detached {
     let result = await sample2()
     let sample = await Sample(label: result)
-    print(sample)
+    //print(sample)
 }
 
 // 以下にまとめてかける
@@ -306,10 +306,10 @@ func wrappedAsyncFetchUser(userID: String) async -> User? {
 Task.detached {
     let userID = "1234"
     let user = await wrappedAsyncFetchUser(userID: userID)
-    print(user ?? "")
+    //print(user ?? "")
     
     let noUser = await wrappedAsyncFetchUser(userID: "")
-    print(noUser ?? "no user")
+    //print(noUser ?? "no user")
 }
 
 // withCheckedThrowingContinuation
@@ -340,11 +340,385 @@ func wrappedRequest(with urlString: String) async throws -> String {
 }
 
 Task.detached {
-    let urlString = "https://example.com"
-    let result = try await wrappedRequest(with: urlString)
-    print(result)
+    // let urlString = "https://example.com"
+    // let result = try await wrappedRequest(with: urlString)
+    // print(result)
 }
 
 
 // ラップする場合は必ず resumeを呼ぶこと
 //　resumeは2回以上呼ぶとErrorになる、guardとかの中なら条件判定とかされるので関係ない
+
+
+// Actor
+/*
+ データ競合を守る新しい型
+ マルチスレッドプログラミングに置いて重要な問題としてはいかにデータ競合を防ぐことが大切
+ 複数のスレッドから一つのデータにアクセスした場合、少なくとも一つのスレッドがデータを更新するとデータが不整合を起こしてしまう可能性がある
+ デバックが非常に難しい厄介なバグになりがち
+
+ 
+ */
+
+class Score {
+    var logs: [Int] = []
+    private(set) var highScore: Int = 0
+    
+    func update(with score: Int) {
+        logs.append(score)
+        if score > highScore {
+            highScore = score
+        }
+    }
+}
+
+let score = Score()
+
+DispatchQueue.global(qos: .default).async {
+    score.update(with: 100)
+    print(score.highScore)
+}
+
+DispatchQueue.global(qos: .default).async {
+    score.update(with: 110)
+    print(score.highScore)
+}
+
+// シリアルキューでデータ競合を防ぐ
+// 昔はNSLockを使っていた。扱いが難しい
+// DispatchQueueでは以下の実装をする
+
+class Score_Old {
+    
+    private let serialQueue = DispatchQueue(label: "serial-dispatch-queue")
+    var logs: [Int] = []
+    private(set) var heghScore: Int = 0
+    
+    func update(with score: Int, completion: @escaping ((Int) -> ())) {
+        serialQueue.async { [weak self] in
+            guard let self else { return }
+            self.logs.append(score)
+            if score > self.heghScore {
+                self.heghScore = score
+            }
+            completion(self.heghScore)
+        }
+    }
+}
+
+let scoreOld = Score_Old()
+
+DispatchQueue.global(qos: .default).async {
+    scoreOld.update(with: 100) { highScore in
+        print("従来の実装", highScore)
+    }
+}
+
+DispatchQueue.global(qos: .default).async {
+    scoreOld.update(with: 110) { highScore in
+        print("従来の実装", highScore)
+    }
+}
+
+
+// Actorでデータ競合を防ぐ
+actor ScoreActor {
+    
+    var logs: [Int] = []
+    private (set) var highScore: Int = 0
+    
+    func update(with score: Int) {
+        logs.append(score)
+        if score > highScore {
+            highScore = score
+        }
+    }
+}
+
+let scoreActor = ScoreActor()
+
+Task.detached {
+    await scoreActor.update(with: 100)
+    print("actorで実装", await scoreActor.highScore)
+}
+
+Task.detached {
+    await scoreActor.update(with: 110)
+    print("actorで実装", await scoreActor.highScore)
+}
+
+ 
+// Actorは参照型
+// class Enum structと同じ機能を持つ
+// Actorは継承できない
+
+//actor A {}
+//actor B: A {} // Actor types do not support inheritance
+
+// ActorはインスタンスごとにActor隔離として他のプログラムから守られている
+// Actor外からアクセスするにはawaitをつける
+// why -> コンパイラに他のタスクがアクセスしている場合はプログラムが中断されそのタスクが終わるまで待機することを伝えるため
+// Actorのメソッドの前にawaitをつけないとErrorになる
+// Actorの中にあるプロパティはActor外で直接更新はできない Errorになる
+
+actor C {
+    var num: Int = 0
+    
+    func update(with value: Int) {
+        // ここにawaitはいらない
+        // Actorが他のコードから隔離されているためActor内では自由に更新可能
+        num = value
+    }
+}
+
+let c = C()
+Task.detached {
+    // 以下はできない
+    // await c.num = 1 // Actor-isolated property 'num' can not be mutated from a Sendable closure
+    // これはできる
+    await c.update(with: 2)
+}
+
+
+// nonisolatedでActor隔離を解除する
+
+//以下のような場合はActor隔離だと都合が悪いのでhash()にnonisolatedをつける
+
+actor B: Hashable {
+    
+    static func == (lhs: B, rhs: B) -> Bool {
+        lhs.id == rhs.id
+    }
+    
+    // Actor-isolated instance method 'hash(into:)' cannot be used to satisfy nonisolated protocol requirement
+    nonisolated func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+    
+    let id: UUID = UUID()
+    private(set) var number = 0
+    
+    func increace() {
+        number += 1
+    }
+}
+
+// nonisolated Actorを隔離するキーワード
+// これをつけることで、Actorの外ではawaitなしで実行できる
+// nonisolatedは呼び出したい時だけつける
+// Protocolに準拠してProtocolが持っているメソッドを使いたい時だけはこれが必要
+// 書き込み可能なデータにnonisolatedはつけられない
+
+
+//actor G: Hashable {
+//    static func == (lhs: G, rhs: G) -> Bool {
+//        lhs.id == rhs.id
+//    }
+//
+//
+//   nonisolated func hash(into hasher: inout Hasher) {
+      // 書き込み可能なデータをnonisolatedで操作しようとするとErrorになる
+      // これはnumが書き込み可能なためError
+//       hasher.combine(num) // Actor-isolated property 'num' can not be referenced from a non-isolated context
+//    }
+//
+//    let id: UUID = UUID()
+//    var num: Int = 0
+//}
+//
+
+
+// 2.5 再入可能性と競合状態
+
+
+actor ScoreA {
+    
+    var localLogs: [Int] = []
+    
+    private(set) var highScore: Int = 0
+    
+    func update(with score: Int) async {
+        highScore = await requestHighScore(with: score)
+        localLogs.append(score)
+    }
+    
+    func requestHighScore(with score: Int) async -> Int {
+        try? await Task.sleep(nanoseconds: 2 * NSEC_PER_SEC)
+        return score
+    }
+}
+
+let scoreA = ScoreA()
+
+Task.detached {
+    await scoreA.update(with: 100)
+    print(await scoreA.localLogs)
+    print(await scoreA.highScore)
+}
+
+Task.detached {
+    await scoreA.update(with: 110)
+    print(await scoreA.localLogs)
+    print(await scoreA.highScore)
+}
+
+
+actor ImageDownloder {
+    private var cached: [String: UIImage] = [:]
+    
+    func image(from url: String) async -> UIImage {
+        // キャッシュがあればそれを使う
+        if cached.keys.contains(url) {
+            return cached[url]!
+        }
+        // イメージをダウンロード
+        let image = await downloadImage(from: url)
+        // キャッシュに保存
+        cached[url] = image
+        return cached[url]!
+        
+    }
+    
+    // サーバーに画像をリクエストすることを想定するmethod
+    // 2秒後に画像をランダムで返す
+    
+    func downloadImage(from url: String) async -> UIImage {
+        try? await Task.sleep(nanoseconds: 2 * NSEC_PER_SEC)
+        switch url {
+        case "monster":
+            // サーバー側でリソースが変わったことを表すためランダムで画像をセットする
+            let imageName = Bool.random() ? "cow" : "fox"
+            return UIImage(named: imageName)!
+        default:
+            return UIImage()
+        }
+    }
+}
+
+
+let imageDownLoder = ImageDownloder()
+
+//Task.detached {
+//    let image = await imageDownLoder.image(from: "monster")
+//    print(image)
+//}
+//
+//Task.detached {
+//    let image = await imageDownLoder.image(from: "monster")
+//    print(image)
+//}
+
+
+func downloadImage(from: String) async -> UIImage {
+    return UIImage()
+}
+// Task で競合状態を防ぐ
+
+actor ImageDownloader2 {
+    private enum CacheEntry {
+        case inProgress(Task<UIImage, Never>)
+        case ready(UIImage)
+    }
+    
+    //　キャッシュにタスクを保存する
+    private var cache: [String: CacheEntry] = [:]
+    
+    
+    func image(from url: String) async -> UIImage? {
+        // キャッシュチェック
+        if let cached = cache[url] {
+            switch cached {
+            case .ready(let image):
+                return image
+            case .inProgress(let task):
+                // 処理中ならtask.valueで画像を取得
+                // awaitがあるのでプログラムは中断する
+                return await task.value
+            }
+        }
+        
+        let task = Task {
+            await downloadImage(from: url)
+        }
+        
+        // タスクをキャッシュに保存
+        // awaitがないのでプログラムは中断しない
+        cache[url] = .inProgress(task)
+        // task.valueでイメージを取得
+        let image = await task.value
+        cache[url] = .ready(image)
+        return image
+    }
+}
+
+
+
+// MainActor
+
+/*
+ UIKitやSwiftUIなどのUI操作のコードの実装にはメインスレッドでの実行が欠かせない。
+ UI操作のコードもデータ競合が発生しないよう特別なActorを用意した。それがMainActor
+ 通常のActor隔離は各インスタンスごとに適応されるがMainActorを適応するとグローバルに共通なActorインスタンスが作成されそのインスタンスと通じてActor隔離が行われる
+ MainActorは内部でDispatchQueue. mainを呼び足しており、データ競合を防ぎつつ処理をメインスレッドで実行することを保証している
+
+
+*/
+
+
+// 型全体に適応できる
+@MainActor
+class UserDataSource {
+    // 暗黙的にMainActorが適応されている
+    var user: String = ""
+    // 暗黙的にMainActorが適応されている
+    func updateUser() {}
+    //　nonisolatedでMainActorを解除する
+    nonisolated func sendLogs() {}
+}
+
+
+struct Mypage {
+    // プロパティに適応　swift5.xではErrorにならないけど　Swift6からErrorになる
+    // Stored property 'info' within struct cannot have a global actor; this is an error in Swift 6
+    @MainActor
+    var info: String = ""
+    
+    // メソッドに適応
+    @MainActor
+    func updateInfo() {}
+    
+    // MainActorに適応されない
+    func sendLogs() {}
+}
+
+
+// MainActorでUIのデータ更新
+
+@MainActor
+final class ViewModel: ObservableObject {
+    
+    @Published private(set) var text: String = ""
+    
+    nonisolated func fetchUser() async -> String {
+        return await waitOneSecond(with: "Arex")
+    }
+    
+    func didTapButton() {
+        Task {
+            text = ""
+            await fetchUser()
+        }
+    }
+    
+    private func waitOneSecond(with string: String) async -> String {
+        try? await Task.sleep(nanoseconds: 1 * NSEC_PER_SEC)
+        return string
+    }
+}
+
+
+// Actor はデータ競合という並行プログラミングにおいて厄介な問題をスマートに解決する新しい型
+// Actorのおかげで複数タスクから同時にデータを書き込もうとしてもデータを守れるコードを簡単に実装できる
+// ただし、Actorの再入可能の特徴のため競合状態が発生する可能性がある
+//　プログラムの中断と再開でActorの状態が変わるそれに対応するコードを書かないと思わぬ不具合につながる
+// UI操作のコードはメインメソッドでの実行が必要だが、MainActorという特別なActorを利用することで処理をメインスレッドで実行しつつデータ競合を防ぐことができる
