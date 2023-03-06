@@ -930,7 +930,7 @@ struct AsyncStreamView: View {
     }
 }
 
-PlaygroundPage.current.setLiveView(AsyncStreamView())
+// PlaygroundPage.current.setLiveView(AsyncStreamView())
 
 // 非同期シーケンスを使う
 
@@ -967,5 +967,196 @@ extension LocationManager2: CLLocationManagerDelegate {
 // https://github.com/SatoTakeshiX/first-step-swift-concurrency/tree/main/AsyncSequence/AsyncSequence
 
 
-// Task
+/*
+ Task
+ 
+ 並行処理をTaskという単位で実行する
+ 全ての非同期関数はTaskを通して実行される
+ 
+タスクに以下がある
+ 
+ - Structured Concurrency(構造化された並行性)
+ 　- キャンセル処理をある程度自動で行なってくれる
+ 　-　動作の正しさをSwift Concurrencyに委ねられる
+ - Unstructurd Concurrency(構造化されていない並行性)
+ 　- 開発者がマニュアルで操作する
+ 　- コードの正しさも開発者が保証しなければいけない
+ 
+*/
 
+/*
+ Structured Concurrency
+ - 近年話題になっているプログラミングパラダイムの一 種
+ - Structuredという言葉は　Structured　programming
+ - 現代的なプログラミング言語では当たり前に備わっている、プログラミングに if 文や for 文などの制御構文を導入して、
+ 　変数や関数がブ ロックのスコープを超えてアクセスできないようにするプログラミングのパラダイムのこと
+ 
+ - タスクの生存期間がスコープを超えて生存しないような作りになっている
+ - 重要なのはタスクグループと async let バインディング
+ 
+ 
+ */
+
+
+
+/*
+ 
+ タスクツリー
+ 
+ タスクツリーは複数のタスクを親子関係で構造化し、従来よりも優先度やキャンセルの制御を簡潔に表すことができます。
+ 親タスクの下に子タスクがあり、その下に孫タスクといったようにタスクを階層化します。
+ 一番下の階層のタスクがすべて完了したら上位のタスクが実行されます。
+ それを繰り返し、最終的にすべての子タスクが完了すると、親タスクが自分のタスクを実行するのです。
+ 言い換えると、親タスクの関数やメソッドは子タスクの処理が完了するまでリターンしません。
+ 
+ 
+ もしも下位のタスクのひとつにエラーが起こると、自動的に同じ階層の他のタスクはキャンセルされたものとしてマークされます。
+ ただし、このマークはタスクが不要になったことを示すだけで、タスクの処理は停止せずに継続されます。
+ 実際にタスクをキャンセルし、処理を止めるには CancellationError というエラーをスローしなければいけません。
+ タスクがキャンセルされると、その子孫タスクは自動的にキャンセルされます。
+ 子タスクがすべてエラーやキャンセルでタスクが完了すると、親タスクにエラーが伝播します。
+ 親タスクはエラーをスローして終了します。
+ 
+ 
+ */
+
+
+/* タスクグループ
+ 
+ - Structured Concurrency の一種
+ - タスクグループはタスクのグループに対して子タスクを追加することで簡単に並列処理を実行できる
+ - タスクの生存期間はタスクグループのスコープ内に閉じ込められており、タスクツリーが形成される
+ 
+ - withTaskGroup
+ - withThrowingTaskGroup
+ 
+ */
+
+
+
+// Errorなし
+
+// 通信している想定としての疑似Code
+struct Util {
+    static func wait(seonds: UInt64) async {
+        try? await Task.sleep(nanoseconds: seonds * NSEC_PER_SEC)
+    }
+}
+
+
+struct MypageInfo {
+    let friends: [String]
+    let airticleTitles: [String]
+    
+}
+
+
+class SampleClass  {
+    // 友達一覧を取得
+    private func fetchFriends() async -> [String] {
+        await Util.wait(seonds: 3)
+        return ["Aris", "Bob", "Cooper"]
+    }
+    
+    
+    // 投稿記事のタイトル一覧
+    private func fetchAirticleTitles() async -> [String] {
+        await Util.wait(seonds: 1)
+        return ["猫を飼い始めました", "名前はココア", "仕事の邪魔をするココア"]
+    }
+    
+    
+    // 二つのAPIから必要なデータを取得する
+    // 親タスク
+    func fetchMypageData() async -> MypageInfo {
+        
+        var friends: [String] = []
+        var airticles: [String] = []
+        
+        // 子タスクの方を定義
+        enum FetchType {
+            case friends([String])
+            case airticles([String])
+        }
+        
+        // ofで子タスクが返す型を設定
+        await withTaskGroup(of: FetchType.self, body: { group in
+            // 子タスクの作成
+            group.addTask { [weak self] in
+                let friends = await self?.fetchFriends() ?? []
+                return FetchType.friends(friends)
+            }
+            
+            // 子タスクの作成
+            group.addTask { [weak self] in
+                let airticles = await self?.fetchAirticleTitles() ?? []
+                return FetchType.airticles(airticles)
+            }
+            
+            // 子タスクの結果を取得
+            for await fetchResult in group {
+                switch fetchResult {
+                case .friends(let value):
+                    friends = value
+                case .airticles(let value):
+                    airticles = value
+                }
+            }
+            
+            // 取得する方法はnext()を呼ぶ方法がある
+            // next()を使うことによってタスクごとに柔軟に結果を制御できる
+            // APIのレスポンスによって他の子タスクの処理をキャンセルするとかができる
+            
+            // 最初に終わったタスク結果を取得する
+            guard let firstResult = await group.next() else {
+                group.cancelAll()
+                return
+            }
+            
+            // 最初の結果を見て必要ならキャンセルできる
+            // group.cancelAll()
+            // ただしキャンセルのチェックをしなければ子タスクの処理は続いてしまうので注意が必要
+            
+            switch firstResult {
+            case .airticles(let a):
+                print(a)
+                
+            case .friends(let f):
+                print(f)
+            }
+        })
+        
+        
+        return MypageInfo(friends: friends, airticleTitles: airticles)
+    }
+    
+    // 並列処理を動的に実行する
+    // 友達のアバター画像を友達のIDをもとに取得する
+    func fetchFriendsAvators(ids: [String]) async -> [String: UIImage?] {
+        return await withTaskGroup(of: (String, UIImage?).self) { group in
+            for id in ids {
+                group.addTask { [weak self] in
+                    return (id, await self?.fetchAvatorImage(id: id))
+                }
+            }
+            
+            var avators: [String: UIImage?] = [:]
+            for await (id, image) in group {
+                avators[id] = image
+            }
+            return avators
+        }
+    }
+    
+    func fetchAvatorImage(id: String) async -> UIImage? {
+        return nil
+    }
+    
+}
+
+
+let sample = SampleClass()
+
+Task {
+    sample.fetchMypageData
+}
