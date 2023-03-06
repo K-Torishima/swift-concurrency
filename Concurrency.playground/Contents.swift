@@ -1038,7 +1038,10 @@ extension LocationManager2: CLLocationManagerDelegate {
 
 // 通信している想定としての疑似Code
 struct Util {
+    
     static func wait(seonds: UInt64) async {
+        // タスクが時間終了前にキャンセルされた場合、この関数はCancellationErrorを投げる。
+        // 途中でキャンセルされたら途中で終了する
         try? await Task.sleep(nanoseconds: seonds * NSEC_PER_SEC)
     }
 }
@@ -1056,6 +1059,12 @@ class SampleClass  {
     private func fetchFriends() async -> [String] {
         await Util.wait(seonds: 3)
         return ["Aris", "Bob", "Cooper"]
+    }
+    
+    // Errorを返す
+    private func fetchFriendsFromLocalDB() async throws -> [String] {
+        await Util.wait(seonds: 1)
+        throw SampleError()
     }
     
     
@@ -1154,9 +1163,163 @@ class SampleClass  {
     
 }
 
+extension SampleClass {
+    
+    struct SampleError: Error {
+        
+        init() {
+            print("Errorです")
+        }
+    }
+    
+    /*
+     
+     withThrowingTaskGroup関数を利用してエラーが発生するタスクを タスクツリーとして実行することができます。
+     ただし、注意としてgroupインスタンスに対して for try await in ループを回すか next メソッドを呼び出さないとエラーが親タスクに伝播しないので、
+     子タスクの結果の収集は忘れずに行う
+     
+     */
+    
+    func fetchAllFriends() async throws -> [String] {
+        return try await withThrowingTaskGroup(of: [String].self, body: { group in
+            // Errorをthrowできる
+            group.addTask { [weak self] in
+                guard let self else { throw SampleError() }
+                
+                return await self.fetchFriends()
+            }
+            
+            group.addTask { [weak self] in
+                guard let self else { throw SampleError() }
+                
+                // Errorが発生する
+                return try await self.fetchFriendsFromLocalDB()
+            }
+            
+            var allFriends: [String] = []
+            
+            for try await friends in group {
+                allFriends.append(contentsOf: friends)
+            }
+            
+            return allFriends
+        })
+    }
+    
+    func showAllFriends() {
+        Task {
+            do {
+                let friends = try await fetchAllFriends()
+                print(friends)
+            } catch {
+                // fetchFriendsFromLocalDBのエラーを呼び出し元でキャッチする。
+                print("error::::", error.localizedDescription)
+            }
+        }
+    }
+}
 
 let sample = SampleClass()
 
 Task {
     sample.fetchMypageData
 }
+
+
+sample.showAllFriends()
+
+// 協調的なキャンセル
+
+/*
+ ## キャンセル方法とキャンセルをチェックする方法
+ - CancellationError タスクをキャンセルする
+ - Task.checkCancellation キャンセルマークが付けられた場合にCancellationErrorをスローする
+ - Task.isCancelled タスクがキャンセルマークつけられたかを判別する
+ 
+ */
+
+
+// Task.checkCancellation
+// 現在のタスクがキャンセルマークが付けられているかどうかを確認する方法の一つ
+// 現在のタスクがキャンセルマークをつけられた場合にCancellationErrorをスローする
+//
+
+
+class CancellationSample {
+    
+    func veryLongTask() async {
+        try? await Task.sleep(nanoseconds: 10 * NSEC_PER_SEC)
+    }
+    
+    func fetchDataWithLongTask() async throws -> [String] {
+        return try await withThrowingTaskGroup(of: [String].self) { group in
+            group.addTask { [weak self] in
+                // 現在のタスクにキャンセルチェックがついているか
+                // ついていたらキャンセルする
+                // ついていなかったらキャンセルしない
+                try Task.checkCancellation()
+                
+                // とても重い処理
+                await self?.veryLongTask()
+                return ["a", "b"]
+            }
+            
+            // 明示的にキャンセルを行う
+            group.cancelAll()
+            
+            var alldata: [String] = []
+            
+            for try await data in group {
+                alldata = data
+            }
+            return alldata
+        }
+    }
+}
+
+
+let cancellationSample = CancellationSample()
+
+Task {
+    do {
+        let result = try await cancellationSample.fetchDataWithLongTask()
+        print(result)
+    } catch {
+        // Errorが来る
+        print("10秒待たずにErrorになる", error.localizedDescription)
+    }
+}
+
+// Task.isCancelled
+// 現在のタスクがキャンセルされたものとしてのマークがついているかどうかを確認する
+// Task.checkCancellation() は CancellationErrorをスローするだけだが、独自のキャンセル処理をしたい場合に私用する
+
+
+extension CancellationSample {
+    
+    func fetchImage(with id: String) async -> UIImage {
+           try? await Task.sleep(nanoseconds: 1 * NSEC_PER_SEC)
+           return UIImage()
+       }
+    
+    func fetchIconsWithLongTask(ids: [String]) async throws -> [UIImage] {
+        return try await withThrowingTaskGroup(of: UIImage.self) { group in
+            for id in ids {
+                // もしキャンセルしたらブレイクしてループを抜ける
+                if Task.isCancelled { break }
+                group.addTask {
+                    return await self.fetchImage(with: id)
+                }
+            }
+            
+            var icons: [UIImage] = []
+            for try await image in group {
+                // キャンセルされたらそこまで取得した画像を渡せる
+                icons.append(image)
+            }
+            return icons
+        }
+    }
+}
+
+// 4.6.3 キャンセルチェックの有無と実行時間
