@@ -1221,12 +1221,12 @@ extension SampleClass {
 
 let sample = SampleClass()
 
-Task {
-    sample.fetchMypageData
-}
+//Task {
+//    sample.fetchMypageData
+//}
 
 
-sample.showAllFriends()
+//sample.showAllFriends()
 
 // 協調的なキャンセル
 
@@ -1280,15 +1280,15 @@ class CancellationSample {
 
 let cancellationSample = CancellationSample()
 
-Task {
-    do {
-        let result = try await cancellationSample.fetchDataWithLongTask()
-        print(result)
-    } catch {
-        // Errorが来る
-        print("10秒待たずにErrorになる", error.localizedDescription)
-    }
-}
+//Task {
+//    do {
+//        let result = try await cancellationSample.fetchDataWithLongTask()
+//        print(result)
+//    } catch {
+//        // Errorが来る
+//        print("10秒待たずにErrorになる", error.localizedDescription)
+//    }
+//}
 
 // Task.isCancelled
 // 現在のタスクがキャンセルされたものとしてのマークがついているかどうかを確認する
@@ -1323,3 +1323,238 @@ extension CancellationSample {
 }
 
 // 4.6.3 キャンセルチェックの有無と実行時間
+
+// 実際にキャンセル時の実行時間を確かめる
+
+struct TimeTracker {
+    // メソッドの実行時間を出力するメソッド
+    static func track(_ process: (() async -> Void)) async {
+        let start = Date()
+        await process()
+        let end = Date()
+        let span = end.timeIntervalSince(start)
+        let doubleDigitSpan = String(format: "%.2f", span)
+        print("\(doubleDigitSpan)秒経過")
+    }
+}
+
+class Cancellation: NSObject {
+    
+    func showNonHandlingCancel() {
+        Task {
+            await TimeTracker.track {
+                await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        // キャンセル、Errorが起きてもTask.sleepはキャンセルされない
+                        try await Task.sleep(nanoseconds: 3 * NSEC_PER_SEC)
+                    }
+                    group.cancelAll()
+                }
+            }
+        }
+    }
+}
+
+let cancellation = Cancellation()
+
+// cancellation.showNonHandlingCancel()
+
+// 長時間かかる重い処理などでキャンセルマークが付いたらタスクを止めたい場合は、Task.checkCancellationを利用する
+
+
+// async let
+
+class AsyncLetClass {
+    
+    struct SampleError: Error {
+        
+        init() {
+            print("Errorです")
+        }
+    }
+    
+    
+    private func fetchFriends() async -> [String] {
+        await Util.wait(seonds: 3)
+        return ["Aris", "Bob", "Cooper"]
+    }
+    
+    private func fetchArticles() async -> [String] {
+        await Util.wait(seonds: 3)
+        return ["テスト１", "テスト２", "テスト３"]
+    }
+    
+    // Errorを返す
+    private func fetchFriendsFromLocalDB() async throws -> [String] {
+        await Util.wait(seonds: 1)
+        throw SampleError()
+    }
+    
+    // Task Groupを使わずにasync let で実装する
+    // 二つのAPIから必要なデータを取得しオブジェクトを生成する
+    func fetchMyPageData() async -> MypageInfo {
+        // 変数を利用する際に await を使うことで子タスクの結果を待ち受つ。
+        // group インスタンスに for await ループを回していたのと同じ操作。
+        // await をしてプログラムを待機することで子タスクの処理が完了する前に親タスクが処理を抜けるのを防いでいます。
+        
+        async let friends = fetchFriends()
+        async let articles = fetchArticles()
+        
+        return await MypageInfo(friends: friends, airticleTitles: articles)
+    }
+    
+    // Errorの場合
+    func fetchAllFriends() async throws -> [String] {
+        async let friends = fetchFriends()
+        async let localFriends = fetchFriendsFromLocalDB() // Errorを返す
+        
+        // localFriendsのためにtry awaitをする
+        
+        // await 式の処理順序
+        // ここのfriends が先か、local Friendsが先かで処理順序が変わるので注意が必要
+        // 何を先に実行させてから何かをしないといけないとかだと順序で実行結果が変わってしまうので要注意
+        return try await friends + localFriends
+    }
+    
+    // 戻り値がない場合
+    // Voidを使用する
+    
+    func notReturnValue() {
+        Task {
+            // Logを並列で呼びたい時とか
+            async let result1: Void = sendLogs()
+            async let result2: Void = sendLogs()
+            
+            await result1
+            await result2
+        }
+    }
+    
+    func sendLogs() {
+        print("Log")
+    }
+}
+
+/*
+ UnStructured Concurrency
+ - Task Group
+ - async let
+ 上記は非同期関数内でしか実行することはできない
+ 同期関数から非同期関数を呼び出すにはTask.init Task.detachedを使う
+ これらは構造化されていない平行性と呼ばれる
+ UnStructured Concurrencyを階層化してもタスクツリーのようにキャンセルされることはなくなる
+ 
+ */
+
+
+// Task.init
+
+/*
+ 実装
+ 
+ // エラーが発生しない場合のイニシャライザー
+ @discardableResult
+ init(priority: TaskPriority? = nil,
+ operation: @escaping @Sendable () async -> Success)
+ // エラーが発生する場合のイニシャライザー
+ @discardableResult
+ init(priority: TaskPriority? = nil,
+ operation: @escaping @Sendable () async throws -> Success)
+ 
+ */
+
+
+class TaskSample {
+    
+    var task: Task<(), Never>? = nil
+    
+    func fetch() {
+        task = Task {
+            let data = await longTask()
+            print(data)
+        }
+    }
+    
+    func forceCancel() {
+        guard let task else { return }
+        task.cancel()
+    }
+    
+    func longTask() async -> String {
+        return "data"
+    }
+}
+
+let taskSample = TaskSample()
+// Button { taskSample.forceCancel } label: { }
+
+/*
+ UnstructuredConcurrency
+ - 階層構造を作れる
+ - ただし階層構造はタスクツリーを形成しているわけではない
+ - Unstructured Concurrency 同士で階層構造がある場合、下位のタスクがキャンセルされても上位のタスクが自動でキャンセルするわけではない
+ */
+  
+
+// Task detached
+// 何も引き継がない新しい親タスクを生成される
+
+/*
+ // エラーが発生しない場合
+ public
+ static func detached(priority: TaskPriority? = nil,
+ operation: @escaping @Sendable () async -> Success) -> Task<Success, Failure>
+ // エラーが発生する場合
+ public
+ static func detached(priority: TaskPriority? = nil,
+ operation:
+ @escaping @Sendable () async throws -> Success)
+ -> Task<Success, Failure>
+ 
+ */
+
+
+// 利用シーン
+//MainActor内で非同期関数を実行する際に、ログ送信などメインスレッドで実行しなくても良い処理を実行したい場合とか
+
+@MainActor
+final class TestViewModel {
+    
+    // View側から呼ばれる
+    // メインスレッドで実行される
+    // ボタンがタップされたらログ送信とユーザーを取得したい場合
+    // ログ送信はメインスレッドで実行されるにはふさわしくない
+    // Task.detachedを飛び出しpriorityを.lowに設定
+    // Task.detached内はメインスレッドで実行されない
+    func didTapButton() {
+        Task {
+            
+            Task.detached(priority: .low) {
+                // メインスレッドで実行されない
+                async let _ = await self.sendLog(name: "hoge")
+                async let _ = await self.sendLog(name: "huga")
+            }
+            
+            // こっちはメインスレッドで実行される
+            // Task.init は呼び出し元の Actor を引き継ぐ
+            let user = await fetchUser()
+            print(user)
+        }
+    }
+    
+    func sendLog(name: String) async {
+        print(name)
+    }
+    
+    func fetchUser() async -> String {
+        return "user1"
+    }
+}
+
+// まとめ
+
+// Task
+// Task.detached
+// ここもう少しふかぼる
+
+// 第5章 Sendable
